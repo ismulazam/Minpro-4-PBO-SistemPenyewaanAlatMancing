@@ -173,7 +173,98 @@ public double hitungTotalSewa(int lamaHari) {
 - Interface `Disewakan` mendefinisikan kontrak `hitungTotalSewa()` dan `sewa()`.
 - Interface `AlatDAO` dan `TransaksiDAO` menyembunyikan cara penyimpanan data.
 
-![Overriding, overloading, abstract class, dan interface](screenshots/05-polymorphism-abstraction.png)
+```java
+// Disewakan.java (Interface Kontrak)
+public interface Disewakan {
+    double hitungTotalSewa(int lamaHari);
+    void sewa(int jumlah);
+}
+
+// AlatMancing.java (Abstract Class)
+public abstract class AlatMancing implements Disewakan {
+    private String idAlat;
+    private String nama;
+    private double hargaSewaPerHari;
+    private int stok;
+
+    // Abstract method: memaksa class turunan mengimplementasikan getInfo()
+    public abstract String getInfo();
+
+    // Overloading: tambahStok(int) dan tambahStok(int, String)
+    public void tambahStok(int jumlah) {
+        this.stok += jumlah;
+    }
+
+    public void tambahStok(int jumlah, String catatan) {
+        this.stok += jumlah;
+        System.out.println("Stok ditambah " + jumlah + " (" + catatan + ")");
+    }
+
+    public double getHargaSewaPerHari() { return hargaSewaPerHari; }
+    public String getNama() { return nama; }
+}
+```
+
+```java
+// Joran.java
+public class Joran extends AlatMancing {
+    private String kekuatan;
+
+    @Override
+    public String getInfo() {
+        return "Joran: " + getNama() + " | Kekuatan: " + kekuatan;
+    }
+
+    @Override
+    public double hitungTotalSewa(int lamaHari) {
+        return getHargaSewaPerHari() * lamaHari;
+    }
+}
+
+// Reel.java
+public class Reel extends AlatMancing {
+    private int jumlahBearing;
+
+    @Override
+    public String getInfo() {
+        return "Reel: " + getNama() + " | Bearing: " + jumlahBearing;
+    }
+
+    @Override
+    public double hitungTotalSewa(int lamaHari) {
+        double total = getHargaSewaPerHari() * lamaHari;
+        if (lamaHari >= 3) {
+            total = total - (total * 0.1); // Diskon 10% jika sewa 3 hari atau lebih
+        }
+        return total;
+    }
+}
+```
+
+```java
+// AlatDAO.java (Interface DAO)
+public interface AlatDAO {
+    List<AlatMancing> getAll();
+}
+
+// Main.java / Controller
+public class Main {
+    public static void main(String[] args) {
+        // Polimorfisme DAO: Controller hanya kenal interface AlatDAO
+        AlatDAO alatDao = new AlatDAOHibernate(); // atau AlatDAOJdbc()
+
+        // Pemanggilan Polimorfik dari List<AlatMancing>
+        List<AlatMancing> daftarAlat = alatDao.getAll();
+
+        for (AlatMancing alat : daftarAlat) {
+            // Java secara dinamis menjalankan getInfo() dan hitungTotalSewa() 
+            // sesuai class aslinya (Joran / Reel)
+            System.out.println(alat.getInfo());
+            System.out.println("Total 3 Hari: " + alat.hitungTotalSewa(3));
+        }
+    }
+}
+```
 *Overriding, overloading, abstract class, dan interface*
 
 ---
