@@ -265,6 +265,13 @@ public class Main {
     }
 }
 ```
+Abstraction: Ditempatkan di Disewakan (interface) dan AlatMancing (abstract class dengan public abstract String getInfo()).
+
+Overriding: Terlihat pada implementasi getInfo() dan hitungTotalSewa() di Joran dan Reel.
+
+Overloading: Terlihat pada method tambahStok(int) dan tambahStok(int, String) di AlatMancing.
+
+Pemanggilan Polimorfik & DAO: Terlihat saat iterasi List<AlatMancing> dan penggunaan AlatDAO.
 *Overriding, overloading, abstract class, dan interface*
 
 ---
@@ -284,7 +291,107 @@ public class Main {
 | Update | `updateStok()` | `UPDATE alat_mancing SET stok = ?, catatan_terakhir = ?` |
 | Delete | `delete()` | `DELETE FROM alat_mancing WHERE id_alat = ?` |
 
-![Penerapan JDBC: db.properties, Koneksi, PreparedStatement, mapRow, commit/rollback](screenshots/06-jdbc.png)
+```properties
+# db.properties
+db.url=jdbc:mysql://localhost:3306/db_mancing
+db.user=root
+db.password=
+```
+
+```java
+// Koneksi.java
+public class Koneksi {
+    public static Connection getConnection() throws SQLException {
+        // Membaca konfigurasi dari db.properties
+        Properties props = new Properties();
+        try (InputStream input = Koneksi.class.getClassLoader().getResourceAsStream("db.properties")) {
+            props.load(input);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return DriverManager.getConnection(props.getProperty("db.url"), props.getProperty("db.user"), props.getProperty("db.password"));
+    }
+}
+```
+
+```java
+// AlatDAOJdbc.java (PreparedStatement, try-with-resources, & mapRow)
+public class AlatDAOJdbc implements AlatDAO {
+    
+    @Override
+    public List<AlatMancing> getAll() {
+        List<AlatMancing> list = new ArrayList<>();
+        String sql = "SELECT * FROM alat_mancing";
+        
+        // Memakai try-with-resources & PreparedStatement
+        try (Connection conn = Koneksi.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql);
+             ResultSet rs = stmt.executeQuery()) {
+            
+            while (rs.next()) {
+                list.add(mapRow(rs));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    // Pemetaan ResultSet ke Objek Joran/Reel
+    private AlatMancing mapRow(ResultSet rs) throws SQLException {
+        String jenis = rs.getString("jenis");
+        if ("Joran".equalsIgnoreCase(jenis)) {
+            return new Joran(rs.getString("id_alat"), rs.getString("nama"), rs.getDouble("harga"), rs.getInt("stok"), rs.getString("kekuatan"));
+        } else {
+            return new Reel(rs.getString("id_alat"), rs.getString("nama"), rs.getDouble("harga"), rs.getInt("stok"), rs.getInt("jumlah_bearing"));
+        }
+    }
+}
+```
+
+```java
+// TransaksiDAOJdbc.java (Manajemen Transaksi: Commit & Rollback)
+public class TransaksiDAOJdbc implements TransaksiDAO {
+    
+    public void simpan(Transaksi tx) {
+        String sqlTx = "INSERT INTO transaksi (id_tx, id_alat, lama_sewa, total) VALUES (?, ?, ?, ?)";
+        String sqlStok = "UPDATE alat_mancing SET stok = stok - ? WHERE id_alat = ?";
+        
+        Connection conn = null;
+        try {
+            conn = Koneksi.getConnection();
+            conn.setAutoCommit(false); // 1. Matikan Auto Commit
+
+            try (PreparedStatement stmtTx = conn.prepareStatement(sqlTx);
+                 PreparedStatement stmtStok = conn.prepareStatement(sqlStok)) {
+                
+                // Insert Transaksi
+                stmtTx.setString(1, tx.getId());
+                stmtTx.setString(2, tx.getAlat().getIdAlat());
+                stmtTx.setInt(3, tx.getLamaSewa());
+                stmtTx.setDouble(4, tx.getTotalHarga());
+                stmtTx.executeUpdate();
+
+                // Update Stok
+                stmtStok.setInt(1, tx.getJumlahSewa());
+                stmtStok.setString(2, tx.getAlat().getIdAlat());
+                stmtStok.executeUpdate();
+
+                conn.commit(); // 2. Commit jika kedua query berhasil
+            }
+        } catch (SQLException e) {
+            if (conn != null) {
+                try {
+                    conn.rollback(); // 3. Rollback jika ada kegagalan
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
+            }
+            e.printStackTrace();
+        }
+    }
+}
+```
 *Penerapan JDBC: db.properties, Koneksi, PreparedStatement, mapRow, commit/rollback*
 
 ---
@@ -293,17 +400,165 @@ public class Main {
 
 Class Model dipetakan ke tabel dengan anotasi Jakarta Persistence. Hierarki `AlatMancing → Joran / Reel` memakai `SINGLE_TABLE`: satu tabel `alat_mancing` dengan kolom `jenis` sebagai pembeda. `HibernateUtil` membangun `SessionFactory` dari `db.properties` (`hbm2ddl.auto=none`, tabel dibuat lewat file SQL). `AlatDAOHibernate` dan `TransaksiDAOHibernate` mengimplementasikan interface DAO yang sama sehingga Controller tidak berubah. Mode dipilih lewat `dao.mode` di `db.properties` atau argumen `orm`.
 
-![Penerapan ORM Hibernate: entity, HibernateUtil, dan DAO Hibernate](screenshots/07-orm.png)
+```java
+// AlatMancing.java (Abstract Class / Superclass Entity)
+import jakarta.persistence.*;
+
+@Entity
+@Table(name = "alat_mancing")
+@Inheritance(strategy = InheritanceType.SINGLE_TABLE) // Strategi Single Table
+@DiscriminatorColumn(name = "jenis", discriminatorType = DiscriminatorType.STRING) // Kolom pembeda Joran/Reel
+public abstract class AlatMancing implements Disewakan {
+    
+    @Id
+    @Column(name = "id_alat")
+    private String idAlat;
+
+    @Column(name = "nama")
+    private String nama;
+
+    @Column(name = "harga_sewa_per_hari")
+    private double hargaSewaPerHari;
+
+    @Column(name = "stok")
+    private int stok;
+
+    // Constructor tanpa parameter (Dibutuhkan Hibernate/JPA)
+    protected AlatMancing() {}
+
+    // Getter, Setter, dan Abstract Method
+    public abstract String getInfo();
+}
+```
+
+```java
+// Joran.java (Subclass Entity)
+import jakarta.persistence.*;
+
+@Entity
+@DiscriminatorValue("Joran") // Nilai pembeda di kolom jenis
+public class Joran extends AlatMancing {
+    
+    @Column(name = "kekuatan")
+    private String kekuatan;
+
+    protected Joran() { super(); } // Required by Hibernate
+
+    @Override
+    public String getInfo() {
+        return "Joran: " + getNama() + " | Kekuatan: " + kekuatan;
+    }
+}
+```
+
+```java
+// HibernateUtil.java (Konfigurasi & Builder SessionFactory)
+import org.hibernate.SessionFactory;
+import org.hibernate.cfg.Configuration;
+
+public class HibernateUtil {
+    private static final SessionFactory sessionFactory = buildSessionFactory();
+
+    private static SessionFactory buildSessionFactory() {
+        try {
+            Configuration cfg = new Configuration();
+            // Memuat konfigurasi dari db.properties
+            cfg.configure("hibernate.cfg.xml"); // atau dibaca langsung via Properties
+            cfg.addAnnotatedClass(AlatMancing.class);
+            cfg.addAnnotatedClass(Joran.class);
+            cfg.addAnnotatedClass(Reel.class);
+            cfg.addAnnotatedClass(Transaksi.class);
+
+            return cfg.buildSessionFactory();
+        } catch (Throwable ex) {
+            System.err.println("Inisialisasi SessionFactory gagal: " + ex);
+            throw new ExceptionInInitializerError(ex);
+        }
+    }
+
+    public static SessionFactory getSessionFactory() {
+        return sessionFactory;
+    }
+}
+```
+
+```java
+// AlatDAOHibernate.java (Implementasi Interface DAO dengan Hibernate Session)
+import org.hibernate.Session;
+import org.hibernate.Transaction;
+
+public class AlatDAOHibernate implements AlatDAO {
+
+    @Override
+    public List<AlatMancing> getAll() {
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            // Menggunakan HQL (Hibernate Query Language)
+            return session.createQuery("FROM AlatMancing", AlatMancing.class).list();
+        }
+    }
+
+    @Override
+    public void insert(AlatMancing alat) {
+        Transaction tx = null;
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            tx = session.beginTransaction();
+            session.persist(alat); // Menyimpan entity ke database
+            tx.commit();
+        } catch (Exception e) {
+            if (tx != null) tx.rollback();
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+```properties
+# db.properties (Pengaturan mode DAO)
+dao.mode=hibernate
+# hibernate.hbm2ddl.auto=none
+```
 *Penerapan ORM Hibernate: entity, HibernateUtil, dan DAO Hibernate*
 
 ---
 
 ## 8. Pembuatan Database
 
-Database dibuat memakai **Laragon** (MySQL) dan **HeidiSQL**. Langkah: (1) jalankan Laragon dengan **Start All**, (2) buka HeidiSQL lewat tombol **Database**, (3) buat database `db_penyewaan_mancing`, (4) jalankan file `database/db_penyewaan_mancing.sql` (membuat tabel `alat_mancing` dan `transaksi` serta mengisi data awal), (5) cek struktur tabel.
+Database dibuat memakai **Laragon** (MySQL) dan **HeidiSQL**. Langkah: (1) jalankan Laragon dengan **Start All**, (2) buka phpmyadmin lewat tombol **Database**, (3) buat database `db_penyewaan_mancing`, (4) jalankan file `database/db_penyewaan_mancing.sql` (membuat tabel `alat_mancing` dan `transaksi` serta mengisi data awal), (5) cek struktur tabel.
 
-![Pembuatan database dengan Laragon dan HeidiSQL](screenshots/08-pembuatan-database.png)
-*Pembuatan database dengan Laragon dan HeidiSQL*
+<img width="1246" height="536" alt="image" src="https://github.com/user-attachments/assets/63832f9f-20fb-4601-b66f-d09397e6caa0" />
+
+```sql
+-- 1. Buat Database
+CREATE DATABASE IF NOT EXISTS db_penyewaan_mancing;
+USE db_penyewaan_mancing;
+
+-- 2. Buat Tabel Single-Table Inheritance (Alat Mancing)
+CREATE TABLE IF NOT EXISTS alat_mancing (
+    id_alat VARCHAR(20) PRIMARY KEY,
+    nama VARCHAR(100) NOT NULL,
+    harga_sewa_per_hari DOUBLE NOT NULL,
+    stok INT NOT NULL,
+    jenis VARCHAR(20) NOT NULL, -- Pembeda: 'Joran' atau 'Reel'
+    kekuatan VARCHAR(50) NULL,   -- Atribut khusus Joran
+    jumlah_bearing INT NULL      -- Atribut khusus Reel
+);
+
+-- 3. Buat Tabel Transaksi
+CREATE TABLE IF NOT EXISTS transaksi (
+    id_transaksi VARCHAR(50) PRIMARY KEY,
+    id_alat VARCHAR(20) NOT NULL,
+    lama_sewa INT NOT NULL,
+    total_harga DOUBLE NOT NULL,
+    tanggal_transaksi TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (id_alat) REFERENCES alat_mancing(id_alat) ON DELETE CASCADE
+);
+
+-- 4. Seed Data Awal
+INSERT INTO alat_mancing (id_alat, nama, harga_sewa_per_hari, stok, jenis, kekuatan, jumlah_bearing) VALUES
+('JRN-01', 'Shimano Lesath', 50000, 5, 'Joran', '15-30 lbs', NULL),
+('REL-01', 'Daiwa Saltiga', 75000, 3, 'Reel', NULL, 12);
+```
+*Pembuatan database dengan Laragon dan phpmyadmin*
 
 ---
 
@@ -311,59 +566,73 @@ Database dibuat memakai **Laragon** (MySQL) dan **HeidiSQL**. Langkah: (1) jalan
 
 Pengujian dilakukan pada mode JDBC (`dao.mode=jdbc`), kemudian pada mode ORM (`dao.mode=orm`).
 
-| No | Pengujian | Hasil yang diharapkan | Screenshot |
-|----|-----------|-----------------------|------------|
-| 1 | Menu 1 dan 6 tepat setelah program dijalankan | Data awal dari file SQL langsung tampil | 09 |
-| 2 | Tambah Joran `J-002` dan Reel `R-002` | Data tersimpan di database | 10 |
-| 3 | Update stok `J-001` (+5, dengan catatan) | Stok menjadi 20 dan catatan tersimpan | 10 |
-| 4 | Hapus alat `R-002` | Baris hilang dari database | 10 |
-| 5 | Transaksi Joran 2 hari (ID alat huruf kecil `j-001`) | Total Rp50.000, stok berkurang | 11 |
-| 6 | Transaksi Reel 3 hari | Total Rp135.000 (diskon 10%), stok berkurang | 11 |
-| 7 | ID alat duplikat, tambahan stok 0, ID alat tidak ada | Pesan error, database tidak berubah | 12 |
-| 8 | ID transaksi duplikat, lama sewa 0, stok kosong | Pesan error, database tidak berubah | 12 |
-| 9 | Input huruf pada menu dan input angka | Input diulang, program tidak crash | 12 |
-| 10 | Hapus alat yang sudah punya transaksi | Riwayat transaksi tetap ada (`id_alat` menjadi NULL) | 13 |
-| 11 | Tutup lalu jalankan program lagi | Data tetap tersimpan | 13 |
-| 12 | Mode ORM: tampil, tambah, update stok, transaksi | Berfungsi sama dengan mode JDBC | 14 |
+| No | Pengujian | Hasil yang diharapkan |
+|----|-----------|-----------------------|
+| 1 | Menu 1 dan 6 tepat setelah program dijalankan | Data awal dari file SQL langsung tampil 
+| 2 | Tambah Joran `J-002` dan Reel `R-002` | Data tersimpan di database 
+| 3 | Update stok `J-001` (+5, dengan catatan) | Stok menjadi 20 dan catatan tersimpan 
+| 4 | Hapus alat `R-002` | Baris hilang dari database 
+| 5 | Transaksi Joran 2 hari (ID alat huruf kecil `j-001`) | Total Rp50.000, stok berkurang 
+| 6 | Transaksi Reel 3 hari | Total Rp135.000 (diskon 10%), stok berkurang 
+| 7 | ID alat duplikat, tambahan stok 0, ID alat tidak ada | Pesan error, database tidak berubah 
+| 8 | ID transaksi duplikat, lama sewa 0, stok kosong | Pesan error, database tidak berubah 
+| 9 | Input huruf pada menu dan input angka | Input diulang, program tidak crash 
+| 10 | Hapus alat yang sudah punya transaksi | Riwayat transaksi tetap ada (`id_alat` menjadi NULL) 
+| 11 | Tutup lalu jalankan program lagi | Data tetap tersimpan 
+| 12 | Mode ORM: tampil, tambah, update stok, transaksi | Berfungsi sama dengan mode JDBC 
 
-![Data awal dari file SQL langsung tampil (menu 1 dan 6) dan isi tabel di database](screenshots/09-data-awal.png)
+<img width="471" height="575" alt="image" src="https://github.com/user-attachments/assets/0f8b792b-afa5-4956-ad16-a6b94c5f0897" />
+
+<img width="974" height="476" alt="image" src="https://github.com/user-attachments/assets/4fd40869-d284-401e-8751-55bddd3163c2" />
+
 *Data awal dari file SQL langsung tampil (menu 1 dan 6) dan isi tabel di database*
 
-![Tambah, update stok, dan hapus alat beserta hasilnya di database](screenshots/10-tambah-update-hapus.png)
+<img width="255" height="426" alt="image" src="https://github.com/user-attachments/assets/5ac030f3-e45a-4624-b8f2-6c82fd2dd241" />
+
+<img width="240" height="157" alt="image" src="https://github.com/user-attachments/assets/97af8cfd-a879-4821-bf23-29390cd11bc2" />
+
 *Tambah, update stok, dan hapus alat beserta hasilnya di database*
 
-![Transaksi sewa Joran dan Reel (diskon), stok berkurang, dan hasil di database](screenshots/11-transaksi.png)
+<img width="284" height="208" alt="image" src="https://github.com/user-attachments/assets/8c7e0539-af53-4ff6-a2f4-b2a361a8b43c" />
+
+<img width="276" height="210" alt="image" src="https://github.com/user-attachments/assets/9191398b-8d2f-4254-a387-821b5cfff403" />
+
+<img width="938" height="461" alt="image" src="https://github.com/user-attachments/assets/20ecb68a-8a3f-4feb-b03c-462a045502ec" />
+
 *Transaksi sewa Joran dan Reel (diskon), stok berkurang, dan hasil di database*
 
-![Validasi data dan validasi input](screenshots/12-validasi.png)
+<img width="251" height="158" alt="image" src="https://github.com/user-attachments/assets/510a2490-ae58-4dee-8ee4-9acc84a3dcab" />
+
 *Validasi data dan validasi input*
 
-![Riwayat transaksi tetap ada walau alat dihapus, dan data tetap tersimpan](screenshots/13-riwayat-tetap-ada.png)
+<img width="471" height="628" alt="image" src="https://github.com/user-attachments/assets/f3c0e5a0-158c-4de6-9e88-c0b9688be2ce" />
+
 *Riwayat transaksi tetap ada walau alat dihapus, dan data tetap tersimpan*
 
-![Pengujian mode ORM (Hibernate) beserta SQL yang dibuat Hibernate](screenshots/14-pengujian-orm.png)
+<img width="415" height="302" alt="image" src="https://github.com/user-attachments/assets/170a1bcd-ce40-4543-a1cf-3dace88c9ba3" />
+
 *Pengujian mode ORM (Hibernate) beserta SQL yang dibuat Hibernate*
 
 ---
 
 ## 10. Penerapan Nilai Tambah
 
-| No | Nilai Tambah | Letak Penerapan | Bukti Screenshot |
-|----|--------------|-----------------|------------------|
-| 1 | Data awal lewat file `.sql`, bukan kode | `database/db_penyewaan_mancing.sql` | 08, 09 |
-| 2 | Arsitektur MVC + DAO | Package `Model`, `View`, `Controller`, `DAO` | 02 |
-| 3 | Dua implementasi DAO yang bisa dipertukarkan (JDBC dan ORM) | `DAO/*Jdbc.java`, `DAO/*Hibernate.java`, `Main.java` | 07, 14 |
-| 4 | Transaksi database atomik (commit / rollback) | `TransaksiDAOJdbc.simpan()` | 06, 11 |
-| 5 | Stok berkurang otomatis saat disewa | `SewaController.catatTransaksi()` | 11 |
-| 6 | Riwayat transaksi tetap utuh saat alat dihapus (`ON DELETE SET NULL`) | `db_penyewaan_mancing.sql` | 08, 13 |
-| 7 | Konfigurasi database terpisah dari kode | `db.properties`, `Koneksi.java` | 06 |
-| 8 | Kombinasi Interface + Abstract Class | `Disewakan.java`, `AlatMancing.java` | 05 |
-| 9 | Method Overloading | `AlatMancing.tambahStok(...)` | 05 |
-| 10 | Diskon otomatis 10% untuk Reel ≥ 3 hari | `Reel.hitungTotalSewa()` | 05, 11 |
-| 11 | Validasi input angka | `SewaView.inputInt()`, `inputDouble()` | 12 |
-| 12 | Validasi data (ID duplikat, ID tidak ditemukan, stok kosong, lama sewa < 1, tambahan stok ≤ 0) | `SewaController`, `AlatMancing` | 12 |
-| 13 | Pencarian ID tidak case-sensitive | `getById()` pada DAO | 11, 12 |
-| 14 | Catatan penambahan stok tersimpan di database | `AlatMancing.catatanTerakhir` | 10 |
+| No | Nilai Tambah | Letak Penerapan |
+|----|--------------|-----------------|
+| 1 | Data awal lewat file `.sql`, bukan kode | `database/db_penyewaan_mancing.sql` 
+| 2 | Arsitektur MVC + DAO | Package `Model`, `View`, `Controller`, `DAO` 
+| 3 | Dua implementasi DAO yang bisa dipertukarkan (JDBC dan ORM) | `DAO/*Jdbc.java`, `DAO/*Hibernate.java`, `Main.java` 
+| 4 | Transaksi database atomik (commit / rollback) | `TransaksiDAOJdbc.simpan()` 
+| 5 | Stok berkurang otomatis saat disewa | `SewaController.catatTransaksi()` 
+| 6 | Riwayat transaksi tetap utuh saat alat dihapus (`ON DELETE SET NULL`) | `db_penyewaan_mancing.sql` 
+| 7 | Konfigurasi database terpisah dari kode | `db.properties`, `Koneksi.java` 
+| 8 | Kombinasi Interface + Abstract Class | `Disewakan.java`, `AlatMancing.java` 
+| 9 | Method Overloading | `AlatMancing.tambahStok(...)` 
+| 10 | Diskon otomatis 10% untuk Reel ≥ 3 hari | `Reel.hitungTotalSewa()` 
+| 11 | Validasi input angka | `SewaView.inputInt()`, `inputDouble()` 
+| 12 | Validasi data (ID duplikat, ID tidak ditemukan, stok kosong, lama sewa < 1, tambahan stok ≤ 0) | `SewaController`, `AlatMancing` 
+| 13 | Pencarian ID tidak case-sensitive | `getById()` pada DAO 
+| 14 | Catatan penambahan stok tersimpan di database | `AlatMancing.catatanTerakhir` 
 
 ---
 
